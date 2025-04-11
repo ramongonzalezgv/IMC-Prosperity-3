@@ -32,9 +32,11 @@ $ prosperity3bt example/starter.py 1 2
 
 # Merge profit and loss across days
 $ prosperity3bt example/starter.py 1 --merge-pnl
+```
 
-# Automatically open the result in the visualizer when done
-# Assumes your algorithm logs in the visualizer's expected format
+Jmerle's backtester also integrates seamlesly with his visualizer, which can also be opened automatically after backtesting from the command line. Additionaly he provides some handy functions to manage the output or debug the trading algorithms.
+```sh
+# Automatically open the result in the visualizer when done. Assumes your algorithm logs in the visualizer's expected format
 $ prosperity3bt example/starter.py 1 --vis
 
 # Write algorithm output to custom file
@@ -50,3 +52,4 @@ $ prosperity3bt example/starter.py 1 --data prosperity3bt/resources
 # Print trader's output to stdout while running
 # This may be helpful when debugging a broken trader
 $ prosperity3bt example/starter.py 1 --print
+```
