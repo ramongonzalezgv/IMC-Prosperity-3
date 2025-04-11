@@ -30,8 +30,6 @@ $ prosperity3bt example/starter.py 1--1 1-0
 # Backtest on all days from rounds 1 and 2
 $ prosperity3bt example/starter.py 1 2
 
-# You get the idea
-
 # Merge profit and loss across days
 $ prosperity3bt example/starter.py 1 --merge-pnl
 
