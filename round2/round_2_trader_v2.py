@@ -137,6 +137,9 @@ class Product:
     DJEMBES = "DJEMBES"
     PICNIC_BASKET1 = "PICNIC_BASKET1"
     PICNIC_BASKET2 = "PICNIC_BASKET2"
+    SPREAD = "SPREAD"
+
+
 
 BASKETS_PRODUCTS = {
     Product.PICNIC_BASKET1: 
@@ -195,6 +198,13 @@ PARAMS = {
         "join_edge": 0,
         "default_edge": 1,
     },
+    Product.SPREAD:{
+        "spread_mean": 379.50439988484237,
+        "starting_its": 30000,
+        "spread_std_window": 25,
+        "zscore_threshold": 11,
+        "target_position": 60,
+    }
 }
 
 
