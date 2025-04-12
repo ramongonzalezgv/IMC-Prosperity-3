@@ -636,7 +636,7 @@ class Trader:
         artificial_orders: List[Order],
         order_depths: Dict[str, OrderDepth],
         baskets_products: Dict[Product, Dict[Product, int]],
-        basket: product
+        basket: Product
     ) -> Dict[str, List[Order]]:
         """
         Convert orders on the artificial basket into orders on the underlying components.
