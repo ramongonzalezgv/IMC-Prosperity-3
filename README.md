@@ -11,7 +11,7 @@ Repository to store the codes submitted to the [IMC Prosperity 3](https://prospe
     <tr>
       <td align="center" valign="top" width="14.28%">
         <a href="https://github.com/ramongonzalezgv">
-          <img src="" width="100px;" alt=""/>
+          <img src="https://avatars.githubusercontent.com/u/134976374?s=400&u=396c675db6bd3a81a5aab50d6fc01d0bca08757d&v=4" width="100px;" alt=""/>
           <br /><sub><b>Ramón González</b></sub></a>
         <br /><sub><a href="" title="LinkedIn">🔗 LinkedIn</a></sub>
       </td>
