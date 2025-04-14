@@ -14,24 +14,18 @@ Repository to store the codes submitted to the [IMC Prosperity 3](https://prospe
           <img src="" width="100px;" alt=""/>
           <br /><sub><b>Ramón González</b></sub></a>
         <br /><sub><a href="" title="LinkedIn">🔗 LinkedIn</a></sub>
-        <br /><a href="" title="Research">🔬</a>
-        <a href="" title="Code">💻</a>
       </td>
       <td align="center" valign="top" width="14.28%">
         <a href="https://github.com/jon-manueco">
           <img src="https://avatars.githubusercontent.com/u/126335353?v=4" width="100px;" alt=""/>
           <br /><sub><b>Jon Mañueco</b></sub></a>
         <br /><sub><a href="" title="LinkedIn">🔗 LinkedIn</a></sub>
-        <br /><a href="" title="Research">🔬</a>
-        <a href="" title="Code">💻</a>
       </td>
       <td align="center" valign="top" width="14.28%">
         <a href="https://github.com/TomSchoenmakers">
           <img src="https://avatars.githubusercontent.com/u/48713054?v=4" width="100px;" alt=""/>
           <br /><sub><b>Tom Schoenmakers</b></sub></a>
         <br /><sub><a href="" title="LinkedIn">🔗 LinkedIn</a></sub>
-        <br /><a href="" title="Research">🔬</a>
-        <a href="" title="Code">💻</a>
       </td>
     </tr>
   </tbody>
