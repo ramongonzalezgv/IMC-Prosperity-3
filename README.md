@@ -97,25 +97,25 @@ $ prosperity3bt example/starter.py 1 --print
 
 <details>
 <summary><h2>Round 1</h2></summary>
-Round 1
-<\details>
+
+</details>
 
 <details>
 <summary><h2>Round 2</h2></summary>
-Round 2
-<\details>
+
+</details>
 
 <details>
 <summary><h2>Round 3</h2></summary>
-Round 3
-<\details>
+
+</details>
 
 <details>
 <summary><h2>Round 4</h2></summary>
-Round 4
-<\details>
+
+</details>
 
 <details>
 <summary><h2>Round 5</h2></summary>
-Round 5
-<\details>
+
+</details>
