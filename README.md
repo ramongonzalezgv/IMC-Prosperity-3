@@ -1,7 +1,7 @@
 # IMC-Prosperity-3
 Repository to store the codes submitted to the [IMC Prosperity 3](https://prosperity.imc.com/) trading challenge.
 
-## the team ✨
+## Team members
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
