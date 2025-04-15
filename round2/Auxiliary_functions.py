@@ -4,6 +4,77 @@ import matplotlib.pyplot as plt
 import os
 import json
 import io
+from collections import defaultdict
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+
+################### BUILD ORDER_DEPTHS FROM DATAFRAME #######################
+
+def build_order_depths(df: pd.DataFrame) -> dict:
+    order_depths = defaultdict(dict)
+
+    for _, row in df.iterrows():
+        timestamp = str(row["timestamp"])
+        product = row["product"]
+
+        # Build buy_orders dictionary
+        buy_orders = {}
+        for i in range(1, 4):
+            price = row.get(f"bid_price_{i}")
+            volume = row.get(f"bid_volume_{i}")
+            if pd.notna(price) and pd.notna(volume):
+                buy_orders[int(price)] = int(volume)
+
+        # Build sell_orders dictionary (volumes should be negative)
+        sell_orders = {}
+        for i in range(1, 4):
+            price = row.get(f"ask_price_{i}")
+            volume = row.get(f"ask_volume_{i}")
+            if pd.notna(price) and pd.notna(volume):
+                sell_orders[int(price)] = -int(volume)
+
+        order_depths[timestamp][product] = OrderDepth(buy_orders, sell_orders)
+
+    return dict(order_depths)
+
+################### FILE READING  #######################
+def create_agreggated_files(comp_round, base_path = rf"C:\Users\gonzaal\Desktop\Personal\Personal python projects\Prosperity 3"):
+
+    # List to store the datafrakmes for all days
+    all_market_data = []
+    all_trade_history = []
+
+    # Iterate iver the days you want to read
+    for day in range(-2, 1):  
+        prices_file = os.path.join(base_path, rf"round{comp_round}\data\prices_round_1_day_{day}.csv")
+        trades_file = os.path.join(base_path, rf"round{comp_round}\data\trades_round_1_day_{day}.csv")
+
+        try:
+            market_data = pd.read_csv(prices_file, sep=";", header=0)
+            all_market_data.append(market_data)
+        except FileNotFoundError:
+            print(f"File {prices_file} was not found\n")
+
+        try:
+            trade_history = pd.read_csv(trades_file, sep=";", header=0)
+            all_trade_history.append(trade_history)
+        except FileNotFoundError:
+            print(f"File {trades_file} was not found\n{80*'-'}")
+
+    # Concatena all dataframes 
+    market_data_ALL = pd.concat(all_market_data, ignore_index=True)
+    trade_history_ALL = pd.concat(all_trade_history, ignore_index=True)
+
+    # Convert the concatenated dataframes to csv
+    output_prices_file = os.path.join(base_path, rf"round{comp_round}\data\prices_round_{comp_round}_ALL.csv")
+    output_trades_file = os.path.join(base_path, rf"round{comp_round}\data\trades_round_{comp_round}_ALL.csv")
+
+    market_data_ALL.to_csv(output_prices_file, sep=";", index=False)
+    trade_history_ALL.to_csv(output_trades_file, sep=";", index=False)
+
+    print(f"Concatenated market data stored in: {output_prices_file}\n")
+    print(f"Concatenated trade history stored in: {output_trades_file}")
+
+
 
 def parse_backtester_output(file_path):
     """
@@ -53,6 +124,8 @@ def parse_backtester_output(file_path):
     trades = json.loads(json_text)
     
     return market_data, trades
+
+################### DATA PLOTTING #######################
 
 def plot_backtest_results(market_data: pd.DataFrame, trades: list):
     """
@@ -148,42 +221,6 @@ def plot_backtest_results(market_data: pd.DataFrame, trades: list):
     plt.show()
 
 
-def create_agreggated_files(comp_round, base_path = rf"C:\Users\gonzaal\Desktop\Personal\Personal python projects\Prosperity 3"):
-
-    # List to store the datafrakmes for all days
-    all_market_data = []
-    all_trade_history = []
-
-    # Iterate iver the days you want to read
-    for day in range(-2, 1):  
-        prices_file = os.path.join(base_path, rf"round{comp_round}\data\prices_round_1_day_{day}.csv")
-        trades_file = os.path.join(base_path, rf"round{comp_round}\data\trades_round_1_day_{day}.csv")
-
-        try:
-            market_data = pd.read_csv(prices_file, sep=";", header=0)
-            all_market_data.append(market_data)
-        except FileNotFoundError:
-            print(f"File {prices_file} was not found\n")
-
-        try:
-            trade_history = pd.read_csv(trades_file, sep=";", header=0)
-            all_trade_history.append(trade_history)
-        except FileNotFoundError:
-            print(f"File {trades_file} was not found\n{80*'-'}")
-
-    # Concatena all dataframes 
-    market_data_ALL = pd.concat(all_market_data, ignore_index=True)
-    trade_history_ALL = pd.concat(all_trade_history, ignore_index=True)
-
-    # Convert the concatenated dataframes to csv
-    output_prices_file = os.path.join(base_path, rf"round{comp_round}\data\prices_round_{comp_round}_ALL.csv")
-    output_trades_file = os.path.join(base_path, rf"round{comp_round}\data\trades_round_{comp_round}_ALL.csv")
-
-    market_data_ALL.to_csv(output_prices_file, sep=";", index=False)
-    trade_history_ALL.to_csv(output_trades_file, sep=";", index=False)
-
-    print(f"Concatenated market data stored in: {output_prices_file}\n")
-    print(f"Concatenated trade history stored in: {output_trades_file}")
 
 def calculate_market_spreads(market_data_path, write_csv = False, csv_path = None):
 
