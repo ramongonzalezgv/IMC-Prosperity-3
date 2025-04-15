@@ -571,6 +571,34 @@ class Trader:
             traderObject["SQUID_INK_last_price"] = mmmid_price
             return fair
         return None
+    
+    def SQUID_INK_fair_value_rolling(
+        self, 
+        order_depth: OrderDepth,
+        traderData: TradingState,
+        squid_ink_position: int,
+    ): 
+        curr_mid_price = self.get_mid_price(order_depth)
+        mid_price_history = traderData[Product.SQUID_INK]["mid price diff history"]
+
+        mid_price_history.append(curr_mid_price)
+
+        if (len(mid_price_history) < self.params[Product.SQUID_INK]["mid price diff window"]):
+
+            return None
+        
+        elif (len(mid_price_history)> self.params[Product.SQUID_INK]["mid price diff window"]):
+
+            mid_price_history.pop(0)
+
+        mid_price_mean = np.mean(mid_price_history)
+        mid_price_std = np.std(mid_price_history)
+
+
+        
+
+        
+
 
     def take_orders(
         self,
@@ -730,9 +758,6 @@ class Trader:
         
         option_orders = []
         
-        if Product.VOLCANIC_ROCK not in order_depths.keys() or len(order_depths[Product.VOLCANIC_ROCK].buy_orders) == 0 or len(order_depths[Product.VOLCANIC_ROCK].sell_orders) == 0:
-            return option_orders
-
         if prod not in order_depths.keys() or len(order_depths[prod].buy_orders) == 0 or len(order_depths[prod].sell_orders) == 0:
             return option_orders
         
@@ -773,6 +798,9 @@ class Trader:
         option_position: int,
         delta: float
     ) -> List[Order]:
+        
+        buy_order_quantity = 0
+        sell_order_quantity = 0
         
         orders: List[Order] = []
         
