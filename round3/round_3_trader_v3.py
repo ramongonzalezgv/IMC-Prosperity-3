@@ -14,9 +14,7 @@ Dict = dict
 
 def BS_CALL(S, K, T, r, sig):
     N = NormalDist().cdf
-    print(S)
-    print(K)
-    print(S/K)
+
     d1 = (np.log(S/K) + (r + 0.5 * sig ** 2) * T) / (sig * np.sqrt(T))
     d2 = d1 - sig * np.sqrt(T)
 
@@ -783,29 +781,29 @@ class Trader:
         else:
             option_position_after_trade = option_position + sum(order.quantity for order in option_orders)
         
-        target_coconut_position = -delta * option_position_after_trade
+        target_underlying_position = -delta * option_position_after_trade
         
-        if target_coconut_position == prod_position:
+        if target_underlying_position == prod_position:
             return orders
         
-        target_coconut_quantity = target_coconut_position - prod_position
+        target_underlying_quantity = target_underlying_position - prod_position
 
         
-        if target_coconut_quantity > 0:
-            # Buy COCONUT
+        if target_underlying_quantity > 0:
+            # Buy underlying
             best_ask = min(order_depths[underlying_prod].sell_orders.keys())
             quantity = min(
-                abs(target_coconut_quantity),
+                abs(target_underlying_quantity),
                 self.LIMIT[underlying_prod] - prod_position,
             )
             if quantity > 0:
                 orders.append(Order(underlying_prod, best_ask, round(quantity)))
         
-        elif target_coconut_quantity < 0:
-            # Sell COCONUT
+        elif target_underlying_quantity < 0:
+            # Sell underlying
             best_bid = max(order_depths[underlying_prod].buy_orders.keys())
             quantity = min(
-                abs(target_coconut_quantity),
+                abs(target_underlying_quantity),
                 self.LIMIT[underlying_prod] + prod_position,
             )
             if quantity > 0:
@@ -831,36 +829,36 @@ class Trader:
         trader_data = ""
 
         if Product.RAINFOREST_RESIN in self.params and Product.RAINFOREST_RESIN in state.order_depths:
-            amethyst_position = (
+            rainforest_resin_position = (
                 state.position[Product.RAINFOREST_RESIN]
                 if Product.RAINFOREST_RESIN in state.position
                 else 0
             )
-            amethyst_take_orders, buy_order_volume, sell_order_volume = (
+            rainforest_resin_take_orders, buy_order_volume, sell_order_volume = (
                 self.take_orders(
                     Product.RAINFOREST_RESIN,
                     state.order_depths[Product.RAINFOREST_RESIN],
                     self.params[Product.RAINFOREST_RESIN]["fair_value"],
                     self.params[Product.RAINFOREST_RESIN]["take_width"],
-                    amethyst_position,
+                    rainforest_resin_position,
                 )
             )
-            amethyst_clear_orders, buy_order_volume, sell_order_volume = (
+            rainforest_resin_clear_orders, buy_order_volume, sell_order_volume = (
                 self.clear_orders(
                     Product.RAINFOREST_RESIN,
                     state.order_depths[Product.RAINFOREST_RESIN],
                     self.params[Product.RAINFOREST_RESIN]["fair_value"],
                     self.params[Product.RAINFOREST_RESIN]["clear_width"],
-                    amethyst_position,
+                    rainforest_resin_position,
                     buy_order_volume,
                     sell_order_volume,
                 )
             )
-            amethyst_make_orders, _, _ = self.make_orders(
+            rainforest_resin_make_orders, _, _ = self.make_orders(
                 Product.RAINFOREST_RESIN,
                 state.order_depths[Product.RAINFOREST_RESIN],
                 self.params[Product.RAINFOREST_RESIN]["fair_value"],
-                amethyst_position,
+                rainforest_resin_position,
                 buy_order_volume,
                 sell_order_volume,
                 self.params[Product.RAINFOREST_RESIN]["disregard_edge"],
@@ -870,7 +868,7 @@ class Trader:
                 self.params[Product.RAINFOREST_RESIN]["soft_position_limit"],
             )
             result[Product.RAINFOREST_RESIN] = (
-                amethyst_take_orders + amethyst_clear_orders + amethyst_make_orders
+                rainforest_resin_take_orders + rainforest_resin_clear_orders + rainforest_resin_make_orders
             )
 
         if Product.KELP in self.params and Product.KELP in state.order_depths:
