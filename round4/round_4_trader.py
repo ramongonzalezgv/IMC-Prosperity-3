@@ -1,6 +1,6 @@
 
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
-from typing import List, Any
+from typing import List, Any, Dict, Tuple
 import string
 import jsonpickle
 import numpy as np
@@ -8,7 +8,6 @@ from statistics import NormalDist
 import math
 import json
 
-Dict = dict
 
 
 
@@ -1516,6 +1515,160 @@ class Trader:
                 hedge_orders.append(Order(underlying_prod, best_bid, -round(quantity)))
         
         return option_orders, hedge_orders
+    
+    def vertical_spread_pair_strat(
+        self,
+        order_depths: Dict[str, OrderDepth],
+        position: Dict[str, int],
+        lower_prod: str,
+        higher_prod: str,
+        threshold: float = 1.0
+    ) -> Tuple[List[Order], List[Order]]:
+        """
+        Create a 1:1 call vertical spread between lower_prod and higher_prod.
+        Returns two lists: (lower_leg_orders, higher_leg_orders).
+        """
+        lower_orders: List[Order] = []
+        higher_orders: List[Order] = []
+
+        # 1) Ensure both legs have valid order books
+        for p in (lower_prod, higher_prod):
+            if (p not in order_depths or
+                not order_depths[p].buy_orders or
+                not order_depths[p].sell_orders):
+                return lower_orders, higher_orders
+
+        # 2) Underlying mid‐price
+        ub, _ = self.get_best_bid(order_depths[Product.VOLCANIC_ROCK])
+        ua, _ = self.get_best_ask(order_depths[Product.VOLCANIC_ROCK])
+        S = (ub + ua) / 2
+
+        # 3) Market prices & vols for both options
+        l_ask, l_ask_vol = self.get_best_ask(order_depths[lower_prod])
+        l_bid, l_bid_vol = self.get_best_bid(order_depths[lower_prod])
+        h_ask, h_ask_vol = self.get_best_ask(order_depths[higher_prod])
+        h_bid, h_bid_vol = self.get_best_bid(order_depths[higher_prod])
+
+        # 4) Theoretical Black‐Scholes prices
+        r = 0
+        T = self.params[lower_prod]['time to maturity']   # same for both
+        sigma = self.params[lower_prod]['mean_volatility']
+        K1 = self.params[lower_prod]['strike']
+        K2 = self.params[higher_prod]['strike']
+
+        theo_l = BS_CALL(S, K1, T, r, sigma)
+        theo_h = BS_CALL(S, K2, T, r, sigma)
+        theo_spread = theo_l - theo_h
+
+        # 5) Market‐observed spreads
+        market_bull_spread = l_ask - h_bid   # cost to buy lower & sell higher
+        market_bear_spread = l_bid - h_ask   # credit for selling lower & buying higher
+
+        # 6) Bull call spread?
+        if theo_spread - market_bull_spread > threshold:
+            qty = min(
+                l_ask_vol,
+                h_bid_vol,
+                self.LIMIT[lower_prod] - position.get(lower_prod, 0),
+                self.LIMIT[higher_prod] + position.get(higher_prod, 0),
+            )
+            if qty > 0:
+                lower_orders.append( Order(lower_prod,  l_ask,  qty) )   # buy lower strike
+                higher_orders.append(Order(higher_prod, h_bid, -qty))   # sell higher strike
+
+        # 7) Bear call spread?
+        elif market_bear_spread - theo_spread > threshold:
+            qty = min(
+                l_bid_vol,
+                h_ask_vol,
+                self.LIMIT[lower_prod] + position.get(lower_prod, 0),
+                self.LIMIT[higher_prod] - position.get(higher_prod, 0),
+            )
+            if qty > 0:
+                lower_orders.append( Order(lower_prod,  l_bid, -qty) )   # sell lower strike
+                higher_orders.append(Order(higher_prod, h_ask,  qty) )  # buy higher strike
+
+        return higher_orders, lower_orders
+    
+    def hedge_with_delta_gamma(
+        self,
+        underlying_prod,
+        main_prod,  # primary option product for which you've taken a position
+        main_prod_option_orders, # List of option orders to be hedged
+        hedging_prod,  # secondary option product used for gamma hedging
+        order_depths: dict,
+        underlying_position,  # current underlying position
+    ):
+        
+        Q1 = 0 # current primary option position quantity (signed: positive for long, negative for short)
+        for order in main_prod_option_orders:
+            Q1 += order.quantity
+
+        # Get mid-price for underlying
+        best_bid_underlying, _ = self.get_best_bid(order_depths[underlying_prod])
+        best_ask_underlying, _ = self.get_best_ask(order_depths[underlying_prod])
+        S = (best_bid_underlying + best_ask_underlying) / 2
+
+        r = 0  # risk-free rate assumption
+
+        # Extract parameters for main and hedging option
+        K1 = self.params[main_prod]['strike']
+        T1 = self.params[main_prod]['time to maturity']
+        sigma1 = self.params[main_prod]['mean_volatility']
+        
+        K2 = self.params[hedging_prod]['strike']
+        T2 = self.params[hedging_prod]['time to maturity']
+        sigma2 = self.params[hedging_prod]['mean_volatility']
+
+        # Compute greeks for the primary option
+        delta1 = delta(S, K1, T1, r, sigma1)
+        gamma1 = gamma(S, K1, T1, r, sigma1)
+
+        # Compute greeks for the hedging option
+        delta2 = delta(S, K2, T2, r, sigma2)
+        gamma2 = gamma(S, K2, T2, r, sigma2)
+
+        # Determine the quantity Q2 required for gamma neutrality
+        # Q1 * gamma1 + Q2 * gamma2 = 0  => Q2 = - (Q1 * gamma1) / gamma2
+        if gamma2 == 0:
+            Q2 = 0
+        else:
+            Q2 = - (Q1 * gamma1) / gamma2
+
+        # Now compute the net delta exposure after the two option positions:
+        net_option_delta = Q1 * delta1 + Q2 * delta2
+
+        # The underlying position needed for delta neutrality:
+        # net_option_delta + Q3 = 0  => Q3 = -net_option_delta
+        Q3 = - net_option_delta
+
+        # Create orders for hedging option and underlying
+        hedge_option_orders = []
+        underlying_hedge_orders = []
+
+        # Order for hedging option
+        if Q2 > 0:
+            # Need to buy hedging options
+            best_ask_hedge, _ = self.get_best_ask(order_depths[hedging_prod])
+            hedge_option_orders.append(Order(hedging_prod, best_ask_hedge, round(Q2)))
+        elif Q2 < 0:
+            best_bid_hedge, _ = self.get_best_bid(order_depths[hedging_prod])
+            hedge_option_orders.append(Order(hedging_prod, best_bid_hedge, -round(Q2)))
+
+        # Order for underlying asset
+        if Q3 > 0:
+            best_ask_underlying, _ = self.get_best_ask(order_depths[underlying_prod])
+            # Ensure that you respect position limits if applicable:
+            quantity = min(round(Q3), self.LIMIT[underlying_prod] - underlying_position)
+            if quantity > 0:
+                underlying_hedge_orders.append(Order(underlying_prod, best_ask_underlying, quantity))
+        elif Q3 < 0:
+            best_bid_underlying, _ = self.get_best_bid(order_depths[underlying_prod])
+            quantity = min(round(abs(Q3)), self.LIMIT[underlying_prod] + underlying_position)
+            if quantity > 0:
+                underlying_hedge_orders.append(Order(underlying_prod, best_bid_underlying, -quantity))
+        
+        return hedge_option_orders, underlying_hedge_orders
         
         
 
@@ -1690,226 +1843,291 @@ class Trader:
 
         #########################################################################################################################################################################
 
-        option_product = Product.VOLCANIC_ROCK_VOUCHER_9500
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_9500
 
-        if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
 
-            option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
-            underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
+        #     option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
+        #     underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
             
 
-            VOLCANIC_ROCK_VOUCHER_10000_position = (
-                state.position[option_product]
-                if option_product in state.position
-                else 0
-            )
-            option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
-            #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     VOLCANIC_ROCK_VOUCHER_10000_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
             
 
-            VOLCANIC_ROCK_position = (
-                state.position[Product.VOLCANIC_ROCK]
-                if Product.VOLCANIC_ROCK in state.position
-                else 0
-            )
+        #     VOLCANIC_ROCK_position = (
+        #         state.position[Product.VOLCANIC_ROCK]
+        #         if Product.VOLCANIC_ROCK in state.position
+        #         else 0
+        #     )
 
-            K = self.params[option_product]['strike']
-            T = self.params[option_product]['time to maturity']
-            r = 0
+        #     K = self.params[option_product]['strike']
+        #     T = self.params[option_product]['time to maturity']
+        #     r = 0
 
-            volatility = implied_volatility(
-                option_mid_price,
-                underlying_mid_price,
-                self.params[option_product]["strike"],
-                T,
-                r
-            )
+        #     volatility = implied_volatility(
+        #         option_mid_price,
+        #         underlying_mid_price,
+        #         self.params[option_product]["strike"],
+        #         T,
+        #         r
+        #     )
 
-            delta1 = delta(underlying_mid_price,K,T,r,volatility)
+        #     delta1 = delta(underlying_mid_price,K,T,r,volatility)
 
-            option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
+        #     option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
 
-            result[Product.VOLCANIC_ROCK] = hedge_orders
-            result[option_product] = option_orders
+        #     result[Product.VOLCANIC_ROCK] = hedge_orders
+        #     result[option_product] = option_orders
 
-        #########################################################################################################################################################################
+        # #########################################################################################################################################################################
 
-        option_product = Product.VOLCANIC_ROCK_VOUCHER_9750
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_9750
 
-        if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
 
-            option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
-            underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
+        #     option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
+        #     underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
             
 
-            VOLCANIC_ROCK_VOUCHER_10000_position = (
-                state.position[option_product]
-                if option_product in state.position
-                else 0
-            )
-            option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
-            #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     VOLCANIC_ROCK_VOUCHER_10000_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
 
 
-            VOLCANIC_ROCK_position = (
-                state.position[Product.VOLCANIC_ROCK]
-                if Product.VOLCANIC_ROCK in state.position
-                else 0
-            )
+        #     VOLCANIC_ROCK_position = (
+        #         state.position[Product.VOLCANIC_ROCK]
+        #         if Product.VOLCANIC_ROCK in state.position
+        #         else 0
+        #     )
 
-            K = self.params[option_product]['strike']
-            T = self.params[option_product]['time to maturity']
-            r = 0
+        #     K = self.params[option_product]['strike']
+        #     T = self.params[option_product]['time to maturity']
+        #     r = 0
 
-            volatility = implied_volatility(
-                option_mid_price,
-                underlying_mid_price,
-                self.params[option_product]["strike"],
-                T,
-                r
-            )
+        #     volatility = implied_volatility(
+        #         option_mid_price,
+        #         underlying_mid_price,
+        #         self.params[option_product]["strike"],
+        #         T,
+        #         r
+        #     )
 
-            delta1 = delta(underlying_mid_price,K,T,r,volatility)
+        #     delta1 = delta(underlying_mid_price,K,T,r,volatility)
 
-            option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
+        #     option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
 
-            result[option_product] = option_orders
-            result[Product.VOLCANIC_ROCK] = hedge_orders
+        #     result[option_product] = option_orders
+        #     result[Product.VOLCANIC_ROCK] = hedge_orders
             
 
-        #########################################################################################################################################################################
+        # #########################################################################################################################################################################
 
-        option_product = Product.VOLCANIC_ROCK_VOUCHER_10000
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_10000
 
-        if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
 
-            option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
-            underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
+        #     option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
+        #     underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
             
 
-            VOLCANIC_ROCK_VOUCHER_10000_position = (
-                state.position[option_product]
-                if option_product in state.position
-                else 0
-            )
-            option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
-            #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     VOLCANIC_ROCK_VOUCHER_10000_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
             
 
-            VOLCANIC_ROCK_position = (
-                state.position[Product.VOLCANIC_ROCK]
-                if Product.VOLCANIC_ROCK in state.position
-                else 0
-            )
+        #     VOLCANIC_ROCK_position = (
+        #         state.position[Product.VOLCANIC_ROCK]
+        #         if Product.VOLCANIC_ROCK in state.position
+        #         else 0
+        #     )
 
-            K = self.params[option_product]['strike']
-            T = self.params[option_product]['time to maturity']
-            r = 0
+        #     K = self.params[option_product]['strike']
+        #     T = self.params[option_product]['time to maturity']
+        #     r = 0
 
-            volatility = implied_volatility(
-                option_mid_price,
-                underlying_mid_price,
-                self.params[option_product]["strike"],
-                T,
-                r
-            )
+        #     volatility = implied_volatility(
+        #         option_mid_price,
+        #         underlying_mid_price,
+        #         self.params[option_product]["strike"],
+        #         T,
+        #         r
+        #     )
 
-            delta1 = delta(underlying_mid_price,K,T,r,volatility)
+        #     delta1 = delta(underlying_mid_price,K,T,r,volatility)
 
-            option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
+        #     option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
 
-            result[option_product] = option_orders
-            result[Product.VOLCANIC_ROCK] = hedge_orders
+        #     result[option_product] = option_orders
+        #     result[Product.VOLCANIC_ROCK] = hedge_orders
 
-        #########################################################################################################################################################################
+        # #########################################################################################################################################################################
 
-        option_product = Product.VOLCANIC_ROCK_VOUCHER_10250
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_10250
 
-        if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
 
-            option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
-            underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
+        #     option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
+        #     underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
             
 
-            VOLCANIC_ROCK_VOUCHER_10000_position = (
-                state.position[option_product]
-                if option_product in state.position
-                else 0
-            )
-            option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
-            #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     VOLCANIC_ROCK_VOUCHER_10000_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
             
 
-            VOLCANIC_ROCK_position = (
-                state.position[Product.VOLCANIC_ROCK]
-                if Product.VOLCANIC_ROCK in state.position
-                else 0
-            )
+        #     VOLCANIC_ROCK_position = (
+        #         state.position[Product.VOLCANIC_ROCK]
+        #         if Product.VOLCANIC_ROCK in state.position
+        #         else 0
+        #     )
 
-            K = self.params[option_product]['strike']
-            T = self.params[option_product]['time to maturity']
-            r = 0
+        #     K = self.params[option_product]['strike']
+        #     T = self.params[option_product]['time to maturity']
+        #     r = 0
 
-            volatility = implied_volatility(
-                option_mid_price,
-                underlying_mid_price,
-                self.params[option_product]["strike"],
-                T,
-                r
-            )
+        #     volatility = implied_volatility(
+        #         option_mid_price,
+        #         underlying_mid_price,
+        #         self.params[option_product]["strike"],
+        #         T,
+        #         r
+        #     )
 
-            delta1 = delta(underlying_mid_price,K,T,r,volatility)
+        #     delta1 = delta(underlying_mid_price,K,T,r,volatility)
 
-            option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
+        #     option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
 
-            result[Product.VOLCANIC_ROCK] = hedge_orders
-            result[option_product] = option_orders
+        #     result[Product.VOLCANIC_ROCK] = hedge_orders
+        #     result[option_product] = option_orders
 
-        #########################################################################################################################################################################
+        # #########################################################################################################################################################################
 
-        option_product = Product.VOLCANIC_ROCK_VOUCHER_10500
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_10500
 
-        if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys() and state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys():
 
-            option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
-            underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
+        #     option_mid_price = (min(state.order_depths[option_product].buy_orders.keys())+ max(state.order_depths[option_product].sell_orders.keys())) / 2
+        #     underlying_mid_price = (min(state.order_depths[Product.VOLCANIC_ROCK].buy_orders.keys())+ max(state.order_depths[Product.VOLCANIC_ROCK].sell_orders.keys())) / 2
             
 
-            VOLCANIC_ROCK_VOUCHER_10000_position = (
-                state.position[option_product]
-                if option_product in state.position
-                else 0
-            )
-            option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
-            #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     VOLCANIC_ROCK_VOUCHER_10000_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
 
-            VOLCANIC_ROCK_position = (
-                state.position[Product.VOLCANIC_ROCK]
-                if Product.VOLCANIC_ROCK in state.position
-                else 0
-            )
+        #     VOLCANIC_ROCK_position = (
+        #         state.position[Product.VOLCANIC_ROCK]
+        #         if Product.VOLCANIC_ROCK in state.position
+        #         else 0
+        #     )
 
-            K = self.params[option_product]['strike']
-            T = self.params[option_product]['time to maturity']
-            r = 0
+        #     K = self.params[option_product]['strike']
+        #     T = self.params[option_product]['time to maturity']
+        #     r = 0
 
-            volatility = implied_volatility(
-                option_mid_price,
-                underlying_mid_price,
-                self.params[option_product]["strike"],
-                T,
-                r
-            )
+        #     volatility = implied_volatility(
+        #         option_mid_price,
+        #         underlying_mid_price,
+        #         self.params[option_product]["strike"],
+        #         T,
+        #         r
+        #     )
 
-            delta1 = delta(underlying_mid_price,K,T,r,volatility)
+        #     delta1 = delta(underlying_mid_price,K,T,r,volatility)
 
-            option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
+        #     option_orders, hedge_orders = self.hedge_option_orders_optimized(Product.VOLCANIC_ROCK,state.order_depths,option_orders,VOLCANIC_ROCK_position, VOLCANIC_ROCK_VOUCHER_10000_position,delta1)
 
-            result[Product.VOLCANIC_ROCK] = hedge_orders
-            result[option_product] = option_orders
+        #     result[Product.VOLCANIC_ROCK] = hedge_orders
+        #     result[option_product] = option_orders
 
         #########################################################################################################################################################################
         
+        ###################################### GAMMA and DELTA HEDGE ####################################################
+        
+        # option_product = Product.VOLCANIC_ROCK_VOUCHER_10500
+        # underlying_prod = Product.VOLCANIC_ROCK
+        # hedge_product = Product.VOLCANIC_ROCK_VOUCHER_10000
+
+        # if option_product in self.params and state.order_depths[option_product].buy_orders.keys() and state.order_depths[option_product].sell_orders.keys() \
+        #     and state.order_depths[underlying_prod].buy_orders.keys() and state.order_depths[underlying_prod].sell_orders.keys() \
+        #     and state.order_depths[hedge_product].buy_orders.keys() and state.order_depths[hedge_product].sell_orders.keys():
+
+
+        #     option_product_position = (
+        #         state.position[option_product]
+        #         if option_product in state.position
+        #         else 0
+        #     )
+        #     option_orders = self.VolcanicRockCoupon_strat(state.order_depths,option_product,option_product_position)
+        #     #option_orders = self.VolcanicRockCoupon_strat_Zscore(state.order_depths,option_product,VOLCANIC_ROCK_VOUCHER_10000_position)
+            
+
+        #     underlying_prod_position = (
+        #         state.position[underlying_prod]
+        #         if underlying_prod in state.position
+        #         else 0
+        #     )
+
+        #     if len(option_orders) > 0:
+                        
+        #         hedge_option_orders, underlying_hedge_orders = self.hedge_with_delta_gamma(
+        #                                                             underlying_prod, 
+        #                                                             option_product,
+        #                                                             option_orders,
+        #                                                             hedge_product,
+        #                                                             state.order_depths,
+        #                                                             underlying_prod_position)
+                
+        #         result[underlying_prod] = underlying_hedge_orders
+        #         result[option_product] = option_orders
+        #         result[hedge_product] = hedge_option_orders
+
+        #########################################################################################################################################################################
+
+        ###################################### TRADE SPREADS ####################################################
+        
+        # higher_prod = Product.VOLCANIC_ROCK_VOUCHER_9750
+        # lower_prod = Product.VOLCANIC_ROCK_VOUCHER_9500
+
+        # if state.order_depths[higher_prod].buy_orders.keys() and state.order_depths[higher_prod].sell_orders.keys() \
+        #    and state.order_depths[lower_prod].buy_orders.keys() and state.order_depths[lower_prod].sell_orders.keys():
+            
+        #     threshold = 1
+
+        #     higher_prod_orders, lower_prod_orders = self.vertical_spread_pair_strat(
+        #                                     state.order_depths,
+        #                                     state.position,
+        #                                     lower_prod,
+        #                                     higher_prod,
+        #                                     threshold)
+            
+        #     result[higher_prod] = higher_prod_orders
+        #     result[lower_prod] = lower_prod_orders
+
+        
+        #########################################################################################################################################################################
+
         basket_position_1 = (
             state.position[Product.PICNIC_BASKET1]
             if Product.PICNIC_BASKET1 in state.position
