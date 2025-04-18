@@ -275,6 +275,8 @@ PARAMS = {
         "disregard_edge": 1,
         "join_edge": 0,
         "default_edge": 1,
+        "price_history": [],
+        "rolling_window": 15
     },
      Product.SPREAD: {
         "default_spread_mean": 22.5,
@@ -723,30 +725,29 @@ class Trader:
     def squid_ink_fair_value_rolling(
         self, 
         order_depth: OrderDepth,
-        traderData: TradingState,
     ): 
-        curr_mid_price = self.get_mid_price(order_depth)
-        mid_price_history = traderData[Product.SQUID_INK]["mid price diff history"]
-
-        mid_price_history.append(curr_mid_price)
-
-        if (len(mid_price_history) < self.params[Product.SQUID_INK]["mid price diff window"]):
-
-            return None
         
-        elif (len(mid_price_history)> self.params[Product.SQUID_INK]["mid price diff window"]):
+        
+        curr_mid_price = self.get_mid_price(order_depth)
+        self.params[Product.SQUID_INK]["price_history"].append(curr_mid_price)
 
-            mid_price_history.pop(0)
 
-        mid_price_rolling_mean = np.mean(mid_price_history)
-        mid_price_rolling_std = np.std(mid_price_history)
+        if (len(self.params[Product.SQUID_INK]["price_history"]) < self.params[Product.SQUID_INK]["rolling_window"]):
+
+            return None, None
+        
+        elif (len(self.params[Product.SQUID_INK]["price_history"])> self.params[Product.SQUID_INK]["rolling_window"]):
+
+            self.params[Product.SQUID_INK]["price_history"].pop(0)
+
+        mid_price_rolling_mean = np.mean(self.params[Product.SQUID_INK]["price_history"])
+        mid_price_rolling_std = np.std(self.params[Product.SQUID_INK]["price_history"])
 
         return mid_price_rolling_mean, mid_price_rolling_std
     
     def squid_ink_take_orders(
         self,
         order_depth: OrderDepth,
-        traderData: TradingState,
         squid_ink_position: int,
     ):
         
@@ -761,18 +762,22 @@ class Trader:
         best_ask_vol = order_depth.sell_orders[best_ask_price]
         
         squid_ink_mid_price = self.get_mid_price(order_depth)
-        squid_ink_fair_value = self.squid_ink_fair_value_rolling(order_depth,traderData)
+        squid_ink_fair_value, squid_ink_std = self.squid_ink_fair_value_rolling(order_depth)
+
+        
 
         if squid_ink_fair_value:
 
             dif = squid_ink_fair_value - squid_ink_mid_price
 
-            if dif > 50:
+            zscore = dif/squid_ink_std
+
+            if zscore < -2:
                 if squid_ink_position < squid_limit:
                     quantity = min(squid_limit - squid_ink_position,best_ask_vol)
                     if quantity > 0:
                         squid_ink_orders.append(Order(Product.SQUID_INK,best_ask_price,quantity))
-            if dif < -10:
+            if zscore > 2:
                 if squid_ink_position > -squid_limit:
                     quantity = min(squid_limit + squid_ink_position,best_bid_vol)
                     if quantity > 0:
@@ -1869,59 +1874,59 @@ class Trader:
                 self.params[Product.KELP]["join_edge"],
                 self.params[Product.KELP]["default_edge"],
             )
-            result[Product.KELP] = (
-                KELP_take_orders + KELP_clear_orders + KELP_make_orders
-            )
+            result[Product.KELP] = (KELP_take_orders + KELP_clear_orders + KELP_make_orders)
+
+
+        ################################################################################################################################################################################################
+        ########################################   TRADE SQUID INK  ########################################################################################################################
+        ################################################################################################################################################################################################
 
         if Product.SQUID_INK in self.params and Product.SQUID_INK in state.order_depths:
-            SQUID_INK_position = (
-                state.position[Product.SQUID_INK]
-                if Product.SQUID_INK in state.position
-                else 0
-            )
 
-            SQUID_INK_fair_value = self.SQUID_INK_fair_value(
-                state.order_depths[Product.SQUID_INK], traderObject
-            )
-            SQUID_INK_take_orders, buy_order_volume, sell_order_volume = (
-                self.take_orders(
-                    Product.SQUID_INK,
-                    state.order_depths[Product.SQUID_INK],
-                    SQUID_INK_fair_value,
-                    self.params[Product.SQUID_INK]["take_width"],
-                    SQUID_INK_position,
-                    self.params[Product.SQUID_INK]["prevent_adverse"],
-                    self.params[Product.SQUID_INK]["adverse_volume"],
-                )
-            )
-            SQUID_INK_clear_orders, buy_order_volume, sell_order_volume = (
-                self.clear_orders(
-                    Product.SQUID_INK,
-                    state.order_depths[Product.SQUID_INK],
-                    SQUID_INK_fair_value,
-                    self.params[Product.SQUID_INK]["clear_width"],
-                    SQUID_INK_position,
-                    buy_order_volume,
-                    sell_order_volume,
-                )
-            )
-            SQUID_INK_make_orders, _, _ = self.make_orders(
-                Product.SQUID_INK,
-                state.order_depths[Product.SQUID_INK],
-                SQUID_INK_fair_value,
-                SQUID_INK_position,
-                buy_order_volume,
-                sell_order_volume,
-                self.params[Product.SQUID_INK]["disregard_edge"],
-                self.params[Product.SQUID_INK]["join_edge"],
-                self.params[Product.SQUID_INK]["default_edge"],
-            )
+            SQUID_INK_position = (state.position[Product.SQUID_INK] if Product.SQUID_INK in state.position else 0)
 
-            result[Product.SQUID_INK] = (SQUID_INK_take_orders + SQUID_INK_clear_orders + SQUID_INK_make_orders )
+        #     SQUID_INK_fair_value = self.SQUID_INK_fair_value(
+        #         state.order_depths[Product.SQUID_INK], traderObject
+        #     )
+        #     SQUID_INK_take_orders, buy_order_volume, sell_order_volume = (
+        #         self.take_orders(
+        #             Product.SQUID_INK,
+        #             state.order_depths[Product.SQUID_INK],
+        #             SQUID_INK_fair_value,
+        #             self.params[Product.SQUID_INK]["take_width"],
+        #             SQUID_INK_position,
+        #             self.params[Product.SQUID_INK]["prevent_adverse"],
+        #             self.params[Product.SQUID_INK]["adverse_volume"],
+        #         )
+        #     )
+        #     SQUID_INK_clear_orders, buy_order_volume, sell_order_volume = (
+        #         self.clear_orders(
+        #             Product.SQUID_INK,
+        #             state.order_depths[Product.SQUID_INK],
+        #             SQUID_INK_fair_value,
+        #             self.params[Product.SQUID_INK]["clear_width"],
+        #             SQUID_INK_position,
+        #             buy_order_volume,
+        #             sell_order_volume,
+        #         )
+        #     )
+        #     SQUID_INK_make_orders, _, _ = self.make_orders(
+        #         Product.SQUID_INK,
+        #         state.order_depths[Product.SQUID_INK],
+        #         SQUID_INK_fair_value,
+        #         SQUID_INK_position,
+        #         buy_order_volume,
+        #         sell_order_volume,
+        #         self.params[Product.SQUID_INK]["disregard_edge"],
+        #         self.params[Product.SQUID_INK]["join_edge"],
+        #         self.params[Product.SQUID_INK]["default_edge"],
+        #     )
 
-            # SQUID_INK_take_orders = self.squid_ink_take_orders(state.order_depths[Product.SQUID_INK],traderObject,SQUID_INK_position)
+        #     result[Product.SQUID_INK] = (SQUID_INK_take_orders + SQUID_INK_clear_orders + SQUID_INK_make_orders )
 
-            # result[Product.SQUID_INK] = SQUID_INK_take_orders
+            SQUID_INK_take_orders = self.squid_ink_take_orders(state.order_depths[Product.SQUID_INK],SQUID_INK_position)
+
+            result[Product.SQUID_INK] = SQUID_INK_take_orders
 
         # if Product.SPREAD1 not in traderObject:
         #     traderObject[Product.SPREAD1] = {
